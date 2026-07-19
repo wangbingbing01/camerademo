@@ -1,0 +1,13 @@
+核心实现：
+使用 XComponent + Camera Kit 保持相机预览会话。
+每次点击调用一次 PhotoOutput.capture()。
+照片自动保存，不跳转系统确认页。
+最多连续拍摄 9 张，最后一次性取得 photoUris 提交或上传。
+已处理相机权限及前后台资源释放。
+主要代码：
+[ContinuousCamera.ets (line 24)](/root/openharmonydemo/MyApplication6/entry/src/main/ets/camera/ContinuousCamera.ets:24)：相机会话、拍照和保存。
+[Index.ets (line 54)](/root/openharmonydemo/MyApplication6/entry/src/main/ets/pages/Index.ets:54)：连拍界面及照片列表。
+[EntryAbility.ets (line 22)](/root/openharmonydemo/MyApplication6/entry/src/main/ets/entryability/EntryAbility.ets:22)：动态申请相机权限。
+[module.json5 (line 35)](/root/openharmonydemo/MyApplication6/entry/src/main/module.json5:35)：声明相机权限。
+“完成”按钮目前用 Toast 演示，真实业务中在 [Index.ets (line 147)](/root/openharmonydemo/MyApplication6/entry/src/main/ets/pages/Index.ets:147) 将 photoUris 批量上传并关联订单即可。
+实现方式参考了华为官方的 Photo Capture 指南 和 Camera 示例工程。当前环境没有安装 HarmonyOS SDK 命令行工具，因此完成了静态检查，但需要在 DevEco Studio 中连接鸿蒙真机验证相机预览和拍摄。
