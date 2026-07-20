@@ -1,0 +1,203 @@
+从现象判断，“录制完成后预览黑屏，同时无法上传”通常不是相机取景本身的问题，而是录制结果文件或返回 URI 的处理出了问题。因为开发者使用的是系统 CameraPicker，应优先检查返回结果，而不是先排查自定义相机的 Surface。
+最可能的原因，按优先级排序：
+返回 URI 被错误地当作普通文件路径
+CameraPicker 往往返回 file://、content://、datashare:// 等 URI。若开发者手动去掉协议、拼接沙箱路径，播放器和上传模块都可能无法读取。
+
+URI 临时授权或访问时机问题
+页面跳转、Ability 重建、应用切后台后才读取，可能出现授权失效或上下文错误。尤其是把 URI 保存下来，过一段时间再上传的场景。
+
+录制文件没有正常封装完成
+录制被异常中断、系统相机进程退出、存储空间不足，可能导致文件为 0 字节，或者 MP4 的关键索引信息没有写入。此时预览和上传通常都会失败。
+
+开发者过早播放或上传
+Picker 返回后，文件仍未完全可读，或者代码没有等待异步结果完成。也要检查是否传入了空 URI、上一次的 URI 或 Promise 未完成时的默认值。
+
+播放器只支持路径，不支持返回的 URI
+如果应用把 URI 直接赋给不兼容的数据源，可能创建播放器成功但解码失败、画面一直黑屏。上传 SDK也可能只接受本地文件路径。
+
+编码或封装兼容问题
+某些设备可能输出 HEVC/H.265、HDR 或特定分辨率、帧率的视频，应用内播放器或第三方上传 SDK不支持。但如果系统图库能正常播放，基本可以把问题缩小到应用的数据源和解码链路。
+
+页面生命周期或视频组件问题
+返回应用时组件被销毁、Surface 未创建、页面进入后台状态，可能只造成黑屏。不过它通常不能解释“上传也失败”，所以优先级低于 URI 和文件问题。
+
+HiLog 分析方法
+建议完整复现一次，并记录以下时间节点：
+调用 CameraPicker 前
+系统相机启动
+点击停止录制
+返回应用
+设置预览数据源
+发起上传
+播放或上传失败
+先清日志，再完整抓取：
+hdc shell hilog -r
+hdc shell hilog -b D -v time
+复现后可以把输出保存到电脑：
+hdc shell hilog -b D -v time > camera_picker_hilog.txt
+如果日志太大，可优先搜索：
+Camera
+CameraPicker
+CameraService
+Recorder
+AVRecorder
+Media
+AVPlayer
+Player
+Codec
+Decoder
+Demuxer
+File
+FileAccess
+DataShare
+Permission
+Ability
+Surface
+Upload
+error
+fail
+denied
+invalid
+重点关注这些错误特征：
+日志特征	可能原因
+permission denied、EACCES、no permission	返回 URI 没有访问权限
+file not found、ENOENT	URI 被转换成了错误路径，或临时文件已不存在
+invalid uri、unsupported scheme	播放器或上传模块不支持该 URI 类型
+size=0、empty file	视频文件未正常生成
+open fd failed、open source failed	无法通过 URI 打开文件
+moov atom not found、invalid mp4、demux failed	MP4 没有正常封装完成或文件损坏
+unsupported codec、HEVC、decoder not found	编码格式不兼容
+surface invalid、surface destroyed	返回应用后播放 Surface 生命周期异常
+network request body empty	上传阶段没有真正读到视频内容
+context invalid、ability destroyed	使用了失效的页面或 Ability 上下文
+
+让开发者补充关键业务日志
+系统日志通常不能完整展示应用如何处理 Picker 结果，建议开发者增加脱敏日志：
+hilog.info(0x0000, 'CameraPicker',
+  'picker returned, uriType=%{public}s, uriEmpty=%{public}s',
+  getUriScheme(uri),
+  String(!uri));
+不要直接打印完整 URI，因为路径中可能包含用户信息。还应记录：
+Picker 返回码及异常码
+返回数组长度
+URI scheme
+打开文件是否成功
+文件描述符是否有效
+可读取的文件长度
+播放器设置数据源的结果
+播放器状态变化和错误码
+上传请求体实际读取的字节数
+页面返回前后的生命周期状态
+最有判别力的测试是：Picker 返回后，立即通过系统提供的 URI/File API打开该 URI，并读取文件头和文件长度。
+打不开：URI、权限或生命周期问题
+长度为 0：录制或落盘失败
+文件有效且系统图库能播：应用播放器的数据源、解码或 Surface 问题
+应用能预览但不能上传：上传 SDK不支持 URI，或读取方式错误
+系统图库也不能播放：录制文件损坏、封装失败或系统相机侧问题
+不要通过字符串截取把 URI 转成本地路径。若上传组件只接受本地文件，应使用文件接口读取 URI 内容，复制到应用沙箱的临时文件，然后上传该临时文件；同时确认复制完成后再开始预览或上传。
+从当前描述看，我会首先让开发者提供三项证据：Picker 返回的 URI 类型、能否成功打开该 URI、打开后文件大小。通常这三项就能快速区分是系统录制异常，还是应用对返回结果处理错误。
+
+
+22:10
+
+
+
+
+
+
+有可能是相机被占用吗，不过我在日志中没有搜到相机被占用的错误码
+
+
+
+
+
+
+22:18
+
+
+
+
+
+
+有可能，但从“能够进入系统相机并完成录制，返回后才黑屏且无法上传”来看，相机被占用的可能性较低。
+相机被占用通常发生在打开相机阶段，典型表现是：
+系统相机无法正常显示预览；
+打开后立即退出或提示相机不可用；
+录制按钮不可用，无法真正开始录像；
+日志出现设备打开失败、资源冲突、相机服务忙等信息。
+如果已经正常看到取景画面、录制计时正常，并且点击停止后成功返回应用，说明相机资源大概率已经成功获取。此时更应检查录制文件是否生成，以及应用能否读取返回 URI。
+没有搜到明确错误码并不能完全排除占用，因为不同系统版本的日志可能只记录状态或文字描述。可以扩大关键词：
+camera
+CameraHost
+CameraService
+CameraManager
+CameraDevice
+device busy
+resource busy
+in use
+conflict
+occupied
+preempt
+evict
+open camera
+open device
+camera unavailable
+camera disconnected
+session
+secure camera
+建议按时间线判断，而不是只找某个错误码：
+是否出现 CameraDevice 打开成功；
+是否创建了 CaptureSession；
+预览是否开始；
+是否创建并启动录像；
+停止时是否正常完成封装；
+Picker 是否向应用返回有效 URI。
+如果日志显示相机成功打开并开始录像，就基本可以排除“录制前被占用”。如果录制中被其他高优先级业务抢占，日志一般会出现设备断开、会话终止、设备错误或客户端被抢占等记录，而且录像通常会提前停止。
+更关键的是检查 Picker 返回之后：
+picker result
+resultCode
+uri
+open
+fd
+stat
+size
+permission
+demux
+mp4
+moov
+player
+upload
+可以让开发者在返回点立即做一次文件验证：
+// 伪代码：具体接口按实际 API 版本调整
+const uri = pickerResult.resultUri;
+hilog.info(DOMAIN, TAG, 'picker success, uri exists=%{public}s',
+  String(!!uri));
+
+const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+const stat = fs.statSync(file.fd);
+
+hilog.info(DOMAIN, TAG,
+  'open result fd=%{public}d, size=%{public}d',
+  file.fd, stat.size);
+
+fs.closeSync(file);
+判断方式很直接：
+相机打不开、没有预览：重点排查占用或相机服务异常。
+有预览但录像未真正开始：排查录像会话或编码器资源冲突。
+Picker 返回 URI 为空：排查录制取消、系统相机异常退出或 Picker 返回码。
+URI 有值但打开报权限错误：排查 URI权限和错误路径转换。
+文件大小为 0：排查录像未落盘或 MP4 未正常结束。
+文件大小正常、系统图库可播放：基本排除相机占用，排查应用播放器与上传实现。
+文件大小正常但图库也不能播放：排查录制中断、编码器或 MP4 封装失败。
+还有一种更常见的“资源占用”并不是相机占用，而是硬件编解码器资源不足。系统相机能取景，但开始/结束录像或应用播放时，编码器、解码器创建失败。日志可搜索：
+Codec
+AVCodec
+Encoder
+Decoder
+create codec failed
+codec resource
+insufficient resource
+no memory
+HEVC
+H264
+因此，目前没有相机占用错误码，同时录制过程表面正常的话，我不会把“相机被占用”作为首要结论。优先确认“返回 URI是否有效、是否能打开、文件大小是否正常、图库是否能播放”，这四项证据比单独搜索相机错误码更有判断力。
